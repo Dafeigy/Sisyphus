@@ -91,6 +91,31 @@ asyncio.run(main())
 JSON-serializable events for CLIs, logs, Server-Sent Events, WebSockets, or
 desktop timelines.
 
+## Host Event Streaming
+
+Runtime events are transport-neutral. Host applications can send the same
+event stream over WebSockets as JSON, or over Server-Sent Events with the small
+SSE encoder:
+
+```python
+from sisyphus.hosts import encode_sse
+
+
+async def sse_response(runtime, message):
+    async for event in runtime.stream(message):
+        yield encode_sse(event)
+```
+
+For WebSocket hosts, send the same runtime event dictionary through the
+framework's JSON helper:
+
+```python
+async for event in runtime.stream(message):
+    await websocket.send_json(event.to_dict())
+```
+
+The core runtime does not import web frameworks or define HTTP routes.
+
 ## Current Status
 
 Sisyphus currently has a first-pass runtime kernel in place:
@@ -102,6 +127,7 @@ Sisyphus currently has a first-pass runtime kernel in place:
 - Tool protocol, registry, mock tools, and basic workspace filesystem tools.
 - Workspace permission policy and permission-aware filesystem capability.
 - Thin CLI host through the `sps` command.
+- Framework-free SSE encoding helpers for exposing runtime events from host adapters.
 - Optional FastAPI mock LLM host for local OpenAI-compatible streaming and tool-call smoke tests.
 - Unit coverage for provider payloads, streaming parsing, runtime loop behavior, tool execution, and filesystem capability events.
 

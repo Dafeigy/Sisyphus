@@ -71,6 +71,11 @@ This file tracks the current implementation state against the first-phase runtim
   - `run.completed`
   - `run.failed`
 - Added `RuntimeEvent.to_dict()` for host adapters.
+- Added framework-free SSE helpers for host adapters:
+  - `encode_sse`
+  - `encode_sse_comment`
+  - `iter_sse`
+- SSE helpers encode runtime event type, sequence id, and JSON payload without adding a web-framework dependency to core.
 
 ### Tools
 
@@ -156,13 +161,18 @@ This file tracks the current implementation state against the first-phase runtim
   - message-only, tool-call-only, and multiple-tool-call scenarios.
   - SSE tool-call argument fragmentation.
   - non-streaming OpenAI-compatible response shape.
+- Added host SSE helper tests for:
+  - runtime event SSE encoding.
+  - event id and event type fields.
+  - multiline JSON data handling.
+  - heartbeat/comment encoding.
 - Current standard-library test command:
 
 ```bash
 python -m unittest discover -s tests
 ```
 
-- Current result: 28 tests passing.
+- Current result: 32 tests passing.
 
 ## Mock Or Incomplete Areas
 
@@ -173,16 +183,17 @@ python -m unittest discover -s tests
 - Permission approval workflows are not implemented yet; policy decisions are immediate allow or deny.
 - CLI rendering is still intentionally minimal, but now consumes the runtime event stream directly.
 - `AgentRuntime` does not yet expose a resumable run store or persistent history.
-- Production FastAPI, WebSocket, and SSE adapters are intentionally out of core scope and not implemented.
+- Production FastAPI and WebSocket adapters are intentionally out of core scope and not implemented.
+- RuntimeEvent-to-SSE text encoding is available, but complete HTTP route adapters remain host-specific.
 - The FastAPI mock LLM server is a development/test host, not a runtime adapter.
 - Multi-agent orchestration, sub-agents, workflow graphs, memory, and persistent task management remain non-goals for the first phase.
 
 ## Recommended Next Steps
 
-1. Add a small SSE encoder helper outside the core runtime, or document how hosts should encode `RuntimeEvent.to_dict()`.
-2. Expand built-in filesystem tools only where they preserve the capability and permission boundaries.
-3. Add minimal optional TOML configuration while keeping direct Python construction primary.
-4. Add packaging metadata for dependencies and optional development extras.
+1. Expand built-in filesystem tools only where they preserve the capability and permission boundaries.
+2. Add minimal optional TOML configuration while keeping direct Python construction primary.
+3. Add packaging metadata for dependencies and optional development extras.
+4. Consider a tiny host example that wires `encode_sse(event)` into a framework-specific `text/event-stream` response without moving that dependency into core.
 
 ## Verification Notes
 
