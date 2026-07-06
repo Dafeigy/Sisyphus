@@ -57,20 +57,54 @@ async for event in runtime.stream("Summarize this project"):
 ## Minimal Embedding Example
 
 ```python
+import asyncio
+
 from sisyphus import AgentRuntime
 from sisyphus.models import OpenAIProvider
 from sisyphus.permissions import WorkspacePolicy
 from sisyphus.tools import builtin_tools
 
-runtime = AgentRuntime(
-    model=OpenAIProvider(model="gpt-4.1"),
-    tools=builtin_tools(["list_files", "read_file"]),
-    permissions=WorkspacePolicy(root=".", read=True, write=False),
-)
 
-result = await runtime.run("Summarize the README")
-print(result.text)
+async def main() -> None:
+    runtime = AgentRuntime(
+        model=OpenAIProvider(
+            model="gpt-4.1",
+            # api_key defaults to OPENAI_API_KEY.
+            # base_url can point to any OpenAI-compatible endpoint.
+        ),
+        tools=builtin_tools(["list_files", "read_file", "mock_lookup"]),
+        permissions=WorkspacePolicy(root=".", read=True, write=False),
+        system_prompt="You are a concise repository assistant.",
+    )
+
+    result = await runtime.run("Read README.md and summarize this project in one paragraph.")
+    print(result.text)
+
+    async for event in runtime.stream("List the files in this workspace."):
+        print(event.to_dict())
+
+
+asyncio.run(main())
 ```
+
+`run()` is the convenient API. `stream()` exposes the same loop as ordered,
+JSON-serializable events for CLIs, logs, Server-Sent Events, WebSockets, or
+desktop timelines.
+
+## Current Status
+
+Sisyphus currently has a first-pass runtime kernel in place:
+
+- OpenAI-compatible chat completions provider with normal and SSE streaming paths.
+- Provider-neutral messages, text blocks, tool call blocks, and tool result blocks.
+- `AgentRuntime.stream()` as the source-of-truth loop and `AgentRuntime.run()` as aggregation.
+- Ordered, JSON-serializable runtime events.
+- Tool protocol, registry, mock tools, and basic workspace filesystem tools.
+- Workspace permission policy and permission-aware filesystem capability.
+- Thin CLI host through the `sps` command.
+- Unit coverage for provider payloads, streaming parsing, runtime loop behavior, tool execution, and filesystem capability events.
+
+Detailed implementation progress is tracked in [PROGRESS.md](PROGRESS.md).
 
 ## CLI Direction
 
@@ -88,4 +122,3 @@ The CLI should not contain special agent logic. It should configure a runtime, c
 
 - [Requirements](docs/requirements.md)
 - [Development Notes](docs/development.md)
-
