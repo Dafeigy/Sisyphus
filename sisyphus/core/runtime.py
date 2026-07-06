@@ -27,12 +27,14 @@ class AgentRuntime:
         permissions: PermissionPolicy | None = None,
         system_prompt: str | None = None,
         config: ModelConfig | None = None,
+        cwd: str | Path | None = None,
     ) -> None:
         self.model = model
         self.tools = tools if isinstance(tools, ToolRegistry) else ToolRegistry(tools)
         self.permissions = permissions or AllowAllPolicy()
         self.system_prompt = system_prompt
         self.config = config
+        self.cwd = Path(cwd).resolve() if cwd is not None else None
 
     async def run(
         self,
@@ -176,6 +178,9 @@ class AgentRuntime:
             events.extend(await pending_events())
             return events, block
 
+        previous_tool = ctx.metadata.get("tool")
+        had_previous_tool = "tool" in ctx.metadata
+        ctx.metadata["tool"] = {"id": call.id, "name": call.name}
         try:
             result = await tool.execute(ctx, **call.arguments)
             block = ToolResultBlock(tool_call_id=call.id, content=result.content, is_error=result.is_error)
@@ -205,14 +210,20 @@ class AgentRuntime:
                     recoverable=True,
                 ),
             )
+        finally:
+            if had_previous_tool:
+                ctx.metadata["tool"] = previous_tool
+            else:
+                ctx.metadata.pop("tool", None)
 
         events.extend(await pending_events())
         return events, block
 
     def _default_context(self, events: RuntimeEventEmitter, *, metadata: dict[str, Any]) -> RuntimeContext:
-        cwd = Path.cwd()
-        fs = FileSystemCapability(cwd, self.permissions, events)
-        return RuntimeContext(cwd=cwd, fs=fs, events=events, metadata=dict(metadata))
+        cwd = self.cwd or Path.cwd()
+        context_metadata = dict(metadata)
+        fs = FileSystemCapability(cwd, self.permissions, events, metadata=context_metadata)
+        return RuntimeContext(cwd=cwd, fs=fs, events=events, metadata=context_metadata)
 
 
 def _normalize_input(input: str | list[Message]) -> list[Message]:

@@ -15,6 +15,12 @@ mock-server = [
     "fastapi>=0.111",
     "uvicorn[standard]>=0.30",
 ]
+dev = [
+    "build>=1.2",
+    "mypy>=1.10",
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
 
 [project.scripts]
 sps = "sisyphus.hosts.cli:main"

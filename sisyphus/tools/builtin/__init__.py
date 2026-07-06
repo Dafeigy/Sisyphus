@@ -8,8 +8,23 @@ from sisyphus.tools.base import MockTool, Tool
 from sisyphus.tools.builtin.fs import ListFilesTool, ReadFileTool, WriteFileTool
 
 
+def available_builtin_tool_names() -> list[str]:
+    return sorted(_available_builtin_tools())
+
+
 def builtin_tools(names: list[str] | None = None) -> list[Tool]:
-    available: dict[str, Tool] = {
+    available = _available_builtin_tools()
+    if names is None:
+        return list(available.values())
+
+    missing = [name for name in names if name not in available]
+    if missing:
+        raise ValueError(f"Unknown built-in tool(s): {', '.join(missing)}")
+    return [available[name] for name in names]
+
+
+def _available_builtin_tools() -> dict[str, Tool]:
+    return {
         "list_files": ListFilesTool(),
         "read_file": ReadFileTool(),
         "write_file": WriteFileTool(),
@@ -25,9 +40,6 @@ def builtin_tools(names: list[str] | None = None) -> list[Tool]:
         ),
         "echo": EchoTool(),
     }
-    if names is None:
-        return list(available.values())
-    return [available[name] for name in names if name in available]
 
 
 class EchoTool:

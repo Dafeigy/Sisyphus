@@ -90,6 +90,9 @@ This file tracks the current implementation state against the first-phase runtim
   - `read_file`
   - `write_file`
 - Filesystem tools use `RuntimeContext.fs` instead of bypassing runtime capabilities.
+- `read_file` supports `max_chars` and returns truncation metadata.
+- `write_file` supports append mode and optional parent directory creation.
+- File tool results include structured write/read metadata where useful.
 
 ### Permissions And Capabilities
 
@@ -102,6 +105,16 @@ This file tracks the current implementation state against the first-phase runtim
 - Added `FileSystemCapability`.
 - Filesystem capability emits permission request and resolution events.
 - Filesystem reads and writes are routed through the permission policy.
+- Workspace filesystem permissions support `allow`, `deny`, and `ask` modes.
+- Added dynamic approval support with:
+  - `ApprovalDecision`
+  - `ApprovalPermissionPolicy`
+  - `ApprovalResolver`
+- Approval decisions can allow a request once or remember approval for the same kind/action/resource.
+- Filesystem capability emits approval-specific events when a policy requires approval:
+  - `permission.approval_requested`
+  - `permission.approval_resolved`
+- Permission request details include the active tool call id and name during runtime tool execution.
 
 ### CLI Host
 
@@ -113,6 +126,28 @@ This file tracks the current implementation state against the first-phase runtim
 - Configures OpenAI-compatible provider, built-in tools, and workspace permissions.
 - Renders streamed text deltas and concise tool status messages.
 - Returns a non-zero exit code when the run emits `run.failed`.
+- Supports optional `--config` TOML loading.
+- Command-line `--model`, `--cwd`, `--base-url`, `--completions-url`, and `--max-iterations` values override config values.
+- Discovers `sisyphus.toml` and `.sisyphus.toml` when `--config` is omitted.
+- Supports `--check` to validate config and CLI setup without running a model request.
+- Reports configuration errors with a concise non-zero CLI exit.
+
+### Configuration
+
+- Added optional TOML configuration loading with standard-library `tomllib`.
+- Supports `[model]`, `[runtime]`, `[workspace]`, and `[tools]` tables.
+- Keeps direct Python construction primary; configuration is a host convenience layer.
+- Preserves unknown `[model]` keys as model metadata for OpenAI-compatible gateways and mock scenarios.
+- CLI workspace configuration now sets both the workspace permission root and the runtime default `cwd`.
+- Validates supported model providers, runtime limits, enabled built-in tools, top-level tables, and workspace root setup for `--check`.
+
+### Packaging
+
+- Added optional `dev` dependency extra for local development tools:
+  - `build`
+  - `mypy`
+  - `pytest`
+  - `ruff`
 
 ### Development Mock LLM Host
 
@@ -166,13 +201,30 @@ This file tracks the current implementation state against the first-phase runtim
   - event id and event type fields.
   - multiline JSON data handling.
   - heartbeat/comment encoding.
+- Added configuration tests for:
+  - TOML file loading.
+  - default config discovery.
+  - config dictionary parsing.
+  - unsupported provider and unknown tool validation.
+  - `ask` permission modes for workspace file access.
+  - CLI/config merge behavior.
+  - CLI `--check` success and failure behavior.
+  - missing workspace root checks.
+  - runtime option construction.
+- Added filesystem permission and tool tests for:
+  - single-use dynamic approval.
+  - remembered dynamic approval.
+  - approval denial.
+  - read truncation metadata.
+  - append writes.
+  - tool-call details in permission requests.
 - Current standard-library test command:
 
 ```bash
 python -m unittest discover -s tests
 ```
 
-- Current result: 32 tests passing.
+- Current result: 49 tests passing.
 
 ## Mock Or Incomplete Areas
 
@@ -190,10 +242,10 @@ python -m unittest discover -s tests
 
 ## Recommended Next Steps
 
-1. Expand built-in filesystem tools only where they preserve the capability and permission boundaries.
-2. Add minimal optional TOML configuration while keeping direct Python construction primary.
-3. Add packaging metadata for dependencies and optional development extras.
-4. Consider a tiny host example that wires `encode_sse(event)` into a framework-specific `text/event-stream` response without moving that dependency into core.
+1. Consider a tiny host example that wires `encode_sse(event)` into a framework-specific `text/event-stream` response without moving that dependency into core.
+2. Document runtime event schemas for hosts, including approval events.
+3. Continue tightening public API boundaries before a first packaged release.
+4. Consider richer filesystem listing metadata while preserving capability and permission boundaries.
 
 ## Verification Notes
 

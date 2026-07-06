@@ -116,6 +116,110 @@ async for event in runtime.stream(message):
 
 The core runtime does not import web frameworks or define HTTP routes.
 
+## Optional TOML Config
+
+Hosts can still construct everything directly in Python, but the CLI can also
+load a small TOML config:
+
+```toml
+[model]
+provider = "openai"
+model = "sisyphus-mock-model"
+completions_url = "http://127.0.0.1:8881/v1/chat/completions"
+mock_scenario = "auto"
+
+[runtime]
+max_iterations = 20
+stream_tokens = true
+
+[workspace]
+root = "."
+read = true
+write = false
+
+[tools]
+enabled = ["list_files", "read_file", "mock_lookup", "echo"]
+```
+
+Use it with the CLI:
+
+```bash
+python -m sisyphus.hosts.cli --config sisyphus.toml --message "List files"
+```
+
+Command-line values such as `--model`, `--cwd`, `--base-url`,
+`--completions-url`, and `--max-iterations` override the config file.
+When `--config` is omitted, the CLI looks for `sisyphus.toml` and then
+`.sisyphus.toml` in the current directory.
+
+Validate config and CLI setup without running a model request:
+
+```bash
+python -m sisyphus.hosts.cli --config sisyphus.toml --check
+```
+
+Config validation checks supported providers, enabled built-in tools, runtime
+limits, TOML shape, and workspace root setup.
+
+Workspace file permissions can be configured as booleans or explicit modes:
+
+```toml
+[workspace]
+read = "ask"
+write = "ask"
+```
+
+The built-in CLI can validate this config, but interactive approval is provided
+by host applications through the permission policy API.
+
+## File Tools And Approval
+
+Built-in filesystem tools stay behind `RuntimeContext.fs`, so reads and writes
+always pass through the configured permission policy. `read_file` supports an
+optional `max_chars` limit, and `write_file` supports overwrite or append:
+
+```python
+tools=builtin_tools(["read_file", "write_file"])
+```
+
+Host applications can require approval dynamically:
+
+```python
+from sisyphus.permissions import ApprovalDecision, ApprovalPermissionPolicy, WorkspacePolicy
+
+
+def approve(request, decision):
+    if request.action == "read":
+        return ApprovalDecision(True, "Allow this read once.")
+    return ApprovalDecision(True, "Allow future writes to this file.", remember=True)
+
+
+permissions = ApprovalPermissionPolicy(
+    WorkspacePolicy(root=".", read="ask", write="ask"),
+    approve,
+)
+```
+
+Returning `remember=True` automatically allows future requests for the same
+kind, action, and resource. Permission requests include tool-call details when
+the runtime is executing a tool.
+
+## Development Setup
+
+Install optional development dependencies when you want pytest, linting, type
+checking, and build tooling:
+
+```bash
+pip install -e ".[dev]"
+```
+
+Useful local verification commands:
+
+```bash
+python -m unittest discover -s tests
+python -m compileall sisyphus
+```
+
 ## Current Status
 
 Sisyphus currently has a first-pass runtime kernel in place:
@@ -126,8 +230,12 @@ Sisyphus currently has a first-pass runtime kernel in place:
 - Ordered, JSON-serializable runtime events.
 - Tool protocol, registry, mock tools, and basic workspace filesystem tools.
 - Workspace permission policy and permission-aware filesystem capability.
+- Dynamic file permission approval for one-off or remembered decisions.
 - Thin CLI host through the `sps` command.
 - Framework-free SSE encoding helpers for exposing runtime events from host adapters.
+- Optional TOML config loading for CLI/runtime host setup.
+- Config validation, default config discovery, and CLI `--check`.
+- Optional `dev` dependency extra for local development tools.
 - Optional FastAPI mock LLM host for local OpenAI-compatible streaming and tool-call smoke tests.
 - Unit coverage for provider payloads, streaming parsing, runtime loop behavior, tool execution, and filesystem capability events.
 
