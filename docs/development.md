@@ -184,43 +184,72 @@ The provider also reads these environment variables when explicit constructor va
 
 Use `OPENAI_CHAT_COMPLETIONS_URL` when a development server exposes one exact endpoint and should bypass `base_url + chat_completions_path` composition.
 
-### Mock SSE Smoke Test
+### Local Mock SSE And Tool-Use Smoke Test
 
-The development mock server used for the first provider pass can be called with:
+The repository includes a FastAPI development server that exposes an
+OpenAI-compatible chat completions endpoint outside the core runtime. The
+default development path does not install the project, so it does not require
+the `hatchling` build backend. Run it from the repository root in one terminal:
 
 ```bash
-curl -X POST "https://dg3dl0.mockapi.dog/" \
-  -H "Content-Type: application/json" \
-  -H "Accept: text/event-stream"
+python -m sisyphus.hosts.mock_llm
 ```
 
-It returns OpenAI-style Server-Sent Events with `data:` lines, streamed `choices[0].delta.content` fragments, and a final `data: [DONE]` marker. A minimal Python smoke test against the same mock looks like this:
+If `fastapi` or `uvicorn` is missing, install only the server runtime
+dependencies:
+
+```bash
+pip install fastapi "uvicorn[standard]"
+```
+
+If the project has already been installed, `sps-mock-llm` is the
+equivalent console-script form.
+
+Then point the runtime at the local endpoint from another terminal:
 
 ```python
 import asyncio
 
-from sisyphus.core.messages import Message, TextBlock
-from sisyphus.models import OpenAIProvider
+from sisyphus import AgentRuntime
+from sisyphus.models import ModelConfig, OpenAIProvider
+from sisyphus.tools import builtin_tools
 
 
 async def main() -> None:
-    provider = OpenAIProvider(
-        model="mock-model",
-        api_key="anything",
-        completions_url="https://dg3dl0.mockapi.dog/",
-        timeout=15,
+    runtime = AgentRuntime(
+        model=OpenAIProvider(
+            model="sisyphus-mock-model",
+            api_key="anything",
+            completions_url="http://127.0.0.1:8881/v1/chat/completions",
+        ),
+        tools=builtin_tools(["list_files", "read_file", "mock_lookup", "echo"]),
+        config=ModelConfig(metadata={"mock_scenario": "auto"}),
     )
 
-    async for delta in provider.stream([Message.text("user", "hi")], []):
-        for block in delta.content:
-            if isinstance(block, TextBlock):
-                print(block.text, end="", flush=True)
+    async for event in runtime.stream("List files and lookup mock project status."):
+        print(event.to_dict())
 
 
 asyncio.run(main())
 ```
 
-The mock is useful for checking SSE parsing and streaming behavior, but unit tests should continue to mock the HTTP boundary so the core test suite does not depend on network access.
+The server returns OpenAI-style Server-Sent Events with `data:` lines, streamed
+`choices[0].delta.content` fragments, fragmented `tool_calls[*].function.arguments`,
+multiple tool calls, and a final `data: [DONE]` marker. Unit tests should still
+mock the HTTP boundary or test pure mock-server helpers so the core suite does
+not depend on a running network service.
+
+The mock server accepts a non-standard `mock_scenario` request field so runtime
+tests can force common agent-provider shapes:
+
+- `auto`: infer the response from the user prompt and provided tools.
+- `message`: return only assistant text with `finish_reason="stop"`.
+- `tool_call`: return a single tool call with no assistant text.
+- `text_and_tool_call`: return assistant text followed by one tool call.
+- `multiple_tool_calls`: return multiple tool calls in the same assistant message.
+
+When using `OpenAIProvider`, pass these through `ModelConfig.metadata`; the
+provider adds metadata fields to the OpenAI-compatible request payload.
 
 ## Tool Protocol
 

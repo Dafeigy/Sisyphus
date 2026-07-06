@@ -139,15 +139,15 @@ class AgentRuntime:
 
             yield await emit(
                 "run.failed",
-                {
-                    "message": "Maximum iterations reached.",
-                    "code": "max_iterations",
-                    "messages": [_message_to_dict(message) for message in messages],
-                },
+                _failure_data(
+                    "Maximum iterations reached.",
+                    code="max_iterations",
+                    details={"messages": [_message_to_dict(message) for message in messages]},
+                    recoverable=False,
+                ),
             )
         except Exception as exc:
-            yield await emit("run.failed", {"message": str(exc), "code": exc.__class__.__name__})
-            raise
+            yield await emit("run.failed", _exception_failure_data(exc, code="provider_error", recoverable=False))
 
     async def _execute_tool_call(
         self,
@@ -164,21 +164,47 @@ class AgentRuntime:
         if tool is None:
             result = ToolResult(content=f"Tool not found: {call.name}", is_error=True)
             block = ToolResultBlock(tool_call_id=call.id, content=result.content, is_error=True)
-            await emitter.emit("tool.failed", {"id": call.id, "name": call.name, "message": result.content})
+            await emitter.emit(
+                "tool.failed",
+                _failure_data(
+                    result.content,
+                    code="unknown_tool",
+                    details={"id": call.id, "name": call.name},
+                    recoverable=True,
+                ),
+            )
             events.extend(await pending_events())
             return events, block
 
         try:
             result = await tool.execute(ctx, **call.arguments)
             block = ToolResultBlock(tool_call_id=call.id, content=result.content, is_error=result.is_error)
-            event_type = "tool.failed" if result.is_error else "tool.completed"
-            await emitter.emit(
-                event_type,
-                {"id": call.id, "name": call.name, "result": _tool_result_to_dict(result)},
-            )
+            if result.is_error:
+                await emitter.emit(
+                    "tool.failed",
+                    _failure_data(
+                        _stringify_message(result.content),
+                        code="tool_error",
+                        details={"id": call.id, "name": call.name, "result": _tool_result_to_dict(result)},
+                        recoverable=True,
+                    ),
+                )
+            else:
+                await emitter.emit(
+                    "tool.completed",
+                    {"id": call.id, "name": call.name, "result": _tool_result_to_dict(result)},
+                )
         except Exception as exc:
             block = ToolResultBlock(tool_call_id=call.id, content=str(exc), is_error=True)
-            await emitter.emit("tool.failed", {"id": call.id, "name": call.name, "message": str(exc)})
+            await emitter.emit(
+                "tool.failed",
+                _exception_failure_data(
+                    exc,
+                    code="permission_denied" if isinstance(exc, PermissionError) else "tool_exception",
+                    details={"id": call.id, "name": call.name},
+                    recoverable=True,
+                ),
+            )
 
         events.extend(await pending_events())
         return events, block
@@ -199,12 +225,12 @@ def _block_to_dict(block: ContentBlock) -> dict[str, Any]:
     if isinstance(block, TextBlock):
         return {"type": "text", "text": block.text}
     if isinstance(block, ToolCallBlock):
-        return {"type": "tool_call", "id": block.id, "name": block.name, "arguments": block.arguments}
+        return {"type": "tool_call", "id": block.id, "name": block.name, "arguments": _json_safe(block.arguments)}
     if isinstance(block, ToolResultBlock):
         return {
             "type": "tool_result",
             "tool_call_id": block.tool_call_id,
-            "content": block.content,
+            "content": _json_safe(block.content),
             "is_error": block.is_error,
         }
     raise TypeError(f"Unsupported content block: {block!r}")
@@ -234,4 +260,53 @@ def _block_from_dict(data: dict[str, Any]) -> ContentBlock:
 
 
 def _tool_result_to_dict(result: ToolResult) -> dict[str, Any]:
-    return {"content": result.content, "is_error": result.is_error, "metadata": result.metadata}
+    return {
+        "content": _json_safe(result.content),
+        "is_error": result.is_error,
+        "metadata": _json_safe(result.metadata),
+    }
+
+
+def _failure_data(
+    message: str,
+    *,
+    code: str,
+    details: dict[str, Any] | None = None,
+    recoverable: bool,
+) -> dict[str, Any]:
+    return {
+        "message": str(message),
+        "code": code,
+        "details": _json_safe(details or {}),
+        "recoverable": recoverable,
+    }
+
+
+def _exception_failure_data(
+    exc: Exception,
+    *,
+    code: str,
+    details: dict[str, Any] | None = None,
+    recoverable: bool,
+) -> dict[str, Any]:
+    merged_details = dict(details or {})
+    merged_details["exception_type"] = exc.__class__.__name__
+    return _failure_data(str(exc), code=code, details=merged_details, recoverable=recoverable)
+
+
+def _stringify_message(content: str | dict[str, Any] | list[Any]) -> str:
+    if isinstance(content, str):
+        return content
+    return str(content)
+
+
+def _json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list | tuple | set):
+        return [_json_safe(item) for item in value]
+    return str(value)

@@ -102,9 +102,59 @@ Sisyphus currently has a first-pass runtime kernel in place:
 - Tool protocol, registry, mock tools, and basic workspace filesystem tools.
 - Workspace permission policy and permission-aware filesystem capability.
 - Thin CLI host through the `sps` command.
+- Optional FastAPI mock LLM host for local OpenAI-compatible streaming and tool-call smoke tests.
 - Unit coverage for provider payloads, streaming parsing, runtime loop behavior, tool execution, and filesystem capability events.
 
 Detailed implementation progress is tracked in [PROGRESS.md](PROGRESS.md).
+
+## Local Mock LLM
+
+For local runtime testing without depending on a remote mock endpoint, start the
+OpenAI-compatible FastAPI service from the repository root:
+
+```bash
+python -m sisyphus.hosts.mock_llm
+```
+
+If `fastapi` or `uvicorn` is missing, install only the server runtime
+dependencies. This does not install the project and does not require
+`hatchling`:
+
+```bash
+pip install fastapi "uvicorn[standard]"
+```
+
+Then run the example or CLI in another terminal:
+
+```bash
+python example.py
+python -m sisyphus.hosts.cli --completions-url http://127.0.0.1:8881/v1/chat/completions --model sisyphus-mock-model --message "List files and lookup mock project status"
+```
+
+If the project has been installed, the equivalent console scripts are
+`sps-mock-llm` and `sps`.
+
+The mock service streams OpenAI-style `data:` events, emits fragmented tool-call arguments, supports multiple tool calls in one assistant message, and returns a final text response after the runtime sends tool results back.
+
+The mock response shape can be selected with `mock_scenario` in the request
+payload. `example.py` reads this from `SISYPHUS_MOCK_SCENARIO`:
+
+```bash
+SISYPHUS_MOCK_SCENARIO=message python example.py
+SISYPHUS_MOCK_SCENARIO=tool_call python example.py
+SISYPHUS_MOCK_SCENARIO=text_and_tool_call python example.py
+SISYPHUS_MOCK_SCENARIO=multiple_tool_calls python example.py
+```
+
+In PowerShell:
+
+```powershell
+$env:SISYPHUS_MOCK_SCENARIO = "tool_call"
+python example.py
+```
+
+Supported scenarios are `auto`, `message`, `tool_call`, `text_and_tool_call`,
+and `multiple_tool_calls`.
 
 ## CLI Direction
 

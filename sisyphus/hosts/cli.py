@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import sys
 from pathlib import Path
 
 from sisyphus import AgentRuntime
@@ -38,9 +39,36 @@ async def run_once(args: argparse.Namespace) -> int:
         tools=builtin_tools(["list_files", "read_file", "mock_lookup", "echo"]),
         permissions=WorkspacePolicy(root=root, read=True, write=False),
     )
-    result = await runtime.run(args.message, options=RunOptions(max_iterations=args.max_iterations))
-    print(result.text)
-    return 0
+    failed = False
+    wrote_text = False
+    async for event in runtime.stream(args.message, options=RunOptions(max_iterations=args.max_iterations)):
+        if event.type == "message.delta":
+            for block in event.data.get("content", []):
+                if block.get("type") == "text" and block.get("text"):
+                    print(block["text"], end="", flush=True)
+                    wrote_text = True
+        elif event.type == "tool.started":
+            if wrote_text:
+                print()
+                wrote_text = False
+            print(f"[tool] {event.data.get('name')} started", file=sys.stderr)
+        elif event.type == "tool.completed":
+            print(f"[tool] {event.data.get('name')} completed", file=sys.stderr)
+        elif event.type == "tool.failed":
+            message = event.data.get("message", "Tool failed.")
+            code = event.data.get("code", "tool_failed")
+            print(f"[tool] {code}: {message}", file=sys.stderr)
+        elif event.type == "run.failed":
+            if wrote_text:
+                print()
+                wrote_text = False
+            message = event.data.get("message", "Run failed.")
+            code = event.data.get("code", "run_failed")
+            print(f"[run] {code}: {message}", file=sys.stderr)
+            failed = True
+    if wrote_text:
+        print()
+    return 1 if failed else 0
 
 
 async def chat(args: argparse.Namespace) -> int:

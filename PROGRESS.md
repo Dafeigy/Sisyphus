@@ -16,6 +16,9 @@ This file tracks the current implementation state against the first-phase runtim
   - `OPENAI_CHAT_COMPLETIONS_URL`
 - Supports non-streaming completion requests.
 - Supports SSE streaming responses with OpenAI-style `data:` lines and `[DONE]`.
+- Assembles OpenAI-compatible streaming tool call fragments by `index`, including partial ids, names, and arguments.
+- Supports multiple tool calls in one streamed assistant message.
+- Falls back to `_raw` for invalid streamed tool arguments that cannot be parsed as JSON.
 - Serializes provider-neutral messages and tool specs into OpenAI-compatible payloads.
 - Parses text responses and tool calls into provider-neutral content blocks.
 
@@ -49,6 +52,8 @@ This file tracks the current implementation state against the first-phase runtim
 - Executes requested tool calls and appends tool result messages back into the loop.
 - Stops when the assistant returns no tool calls.
 - Fails with a `run.failed` event when `max_iterations` is reached.
+- Normalizes `run.failed` payloads with `message`, `code`, `details`, and `recoverable`.
+- Normalizes `tool.failed` payloads with `message`, `code`, `details`, and `recoverable`.
 - Supports optional timeout through `RunOptions.timeout_seconds`.
 
 ### Events
@@ -101,10 +106,25 @@ This file tracks the current implementation state against the first-phase runtim
 - Supports simple interactive chat mode.
 - Uses the same `AgentRuntime` path as embedded callers.
 - Configures OpenAI-compatible provider, built-in tools, and workspace permissions.
+- Renders streamed text deltas and concise tool status messages.
+- Returns a non-zero exit code when the run emits `run.failed`.
+
+### Development Mock LLM Host
+
+- Added an optional FastAPI-based OpenAI-compatible mock LLM server outside the core runtime.
+- Supports no-install startup with `python -m sisyphus.hosts.mock_llm`.
+- Added optional `sps-mock-llm` entry point for installed environments.
+- Supports `/`, `/chat/completions`, and `/v1/chat/completions`.
+- Supports non-streaming and SSE streaming chat completions.
+- Streams text deltas, fragmented tool-call arguments, and multiple tool calls in one assistant message.
+- Supports explicit `mock_scenario` values for message-only, tool-call-only, text-plus-tool-call, and multiple-tool-call responses.
+- Returns final text after the runtime sends tool result messages back to the mock server.
+- Updated `example.py` to target the local mock endpoint by default while still allowing `OPENAI_CHAT_COMPLETIONS_URL` override.
 
 ### Documentation
 
 - Updated README with a minimal embedding example.
+- Added local mock LLM smoke-test instructions to README and development notes.
 - Added current status summary to README.
 - Added this detailed progress tracker.
 
@@ -116,18 +136,33 @@ This file tracks the current implementation state against the first-phase runtim
   - environment variable configuration.
   - tool call parsing.
   - SSE text delta parsing.
+  - streamed tool-call argument assembly.
+  - multiple streamed tool calls.
+  - mixed text and tool-call streaming deltas.
+  - invalid streamed tool-call JSON fallback.
 - Added runtime tests for:
   - streamed text aggregation.
   - tool call execution and loop continuation.
   - filesystem capability permission events.
   - built-in file tool capability usage.
+  - unknown tool failure boundaries.
+  - tool exceptions.
+  - permission denied tool failures.
+  - max iteration failures.
+  - provider failures.
+  - `stream_tokens=False` behavior.
+- Added mock LLM helper tests for:
+  - multiple tool-call selection.
+  - message-only, tool-call-only, and multiple-tool-call scenarios.
+  - SSE tool-call argument fragmentation.
+  - non-streaming OpenAI-compatible response shape.
 - Current standard-library test command:
 
 ```bash
 python -m unittest discover -s tests
 ```
 
-- Current result: 10 tests passing.
+- Current result: 28 tests passing.
 
 ## Mock Or Incomplete Areas
 
@@ -136,20 +171,18 @@ python -m unittest discover -s tests
 - Filesystem tools are minimal and do not yet handle richer file metadata, recursive listing, binary content, or patch-style edits.
 - Shell, network, secret store, and browser capabilities are not implemented yet.
 - Permission approval workflows are not implemented yet; policy decisions are immediate allow or deny.
-- CLI rendering is minimal and currently prints final text or raw streamed event dictionaries.
+- CLI rendering is still intentionally minimal, but now consumes the runtime event stream directly.
 - `AgentRuntime` does not yet expose a resumable run store or persistent history.
-- FastAPI, WebSocket, and SSE adapters are intentionally out of core scope and not implemented.
+- Production FastAPI, WebSocket, and SSE adapters are intentionally out of core scope and not implemented.
+- The FastAPI mock LLM server is a development/test host, not a runtime adapter.
 - Multi-agent orchestration, sub-agents, workflow graphs, memory, and persistent task management remain non-goals for the first phase.
 
 ## Recommended Next Steps
 
-1. Tighten runtime error behavior so model/provider failures always produce useful serializable `run.failed` details.
-2. Improve streaming tool-call assembly for providers that emit tool call arguments across multiple deltas.
-3. Add tests for permission denial and unknown tool calls.
-4. Add a small SSE encoder helper outside the core runtime, or document how hosts should encode `RuntimeEvent.to_dict()`.
-5. Expand built-in filesystem tools only where they preserve the capability and permission boundaries.
-6. Improve CLI event rendering while keeping the CLI as a thin host.
-7. Add packaging metadata for dependencies and optional development extras.
+1. Add a small SSE encoder helper outside the core runtime, or document how hosts should encode `RuntimeEvent.to_dict()`.
+2. Expand built-in filesystem tools only where they preserve the capability and permission boundaries.
+3. Add minimal optional TOML configuration while keeping direct Python construction primary.
+4. Add packaging metadata for dependencies and optional development extras.
 
 ## Verification Notes
 

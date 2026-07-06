@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 from sisyphus import AgentRuntime
 from sisyphus.capabilities import FileSystemCapability
@@ -11,7 +13,7 @@ from sisyphus.core import Message, RunOptions, RuntimeContext, TextBlock, ToolCa
 from sisyphus.core.events import RuntimeEventEmitter
 from sisyphus.models import ModelResponse, ModelStreamDelta
 from sisyphus.permissions import WorkspacePolicy
-from sisyphus.tools import MockTool, builtin_tools
+from sisyphus.tools import MockTool, ToolResult, builtin_tools
 
 
 class ScriptedModel:
@@ -26,6 +28,24 @@ class ScriptedModel:
         self.calls.append({"messages": list(messages), "tools": list(tools), "system": system, "config": config})
         for delta in self.outputs.pop(0):
             yield delta
+
+
+class FailingModel:
+    async def complete(self, messages, tools, *, system=None, config=None):
+        return ModelResponse(content=[])
+
+    async def stream(self, messages, tools, *, system=None, config=None):
+        raise RuntimeError("provider exploded")
+        yield
+
+
+class ExplodingTool:
+    name = "explode"
+    description = "Raise an exception."
+    input_schema: dict[str, Any] = {"type": "object", "properties": {}}
+
+    async def execute(self, ctx: RuntimeContext, **kwargs: Any) -> ToolResult:
+        raise ValueError("boom")
 
 
 class RuntimeTests(unittest.TestCase):
@@ -103,6 +123,95 @@ class RuntimeTests(unittest.TestCase):
 
         self.assertEqual(result.content, "mock content")
         self.assertEqual([event.type for event in emitter.events], ["permission.requested", "permission.resolved"])
+
+    def test_unknown_tool_emits_failed_event_and_tool_result(self) -> None:
+        model = ScriptedModel(
+            [
+                [ModelStreamDelta(content=[ToolCallBlock("call-1", "missing_tool", {"query": "x"})])],
+                [ModelStreamDelta(content=[TextBlock("done")])],
+            ]
+        )
+        runtime = AgentRuntime(model=model)
+
+        result = asyncio.run(runtime.run("use missing", options=RunOptions(run_id="unknown-tool")))
+
+        failed = next(event for event in result.events if event.type == "tool.failed")
+        self.assertEqual(failed.data["code"], "unknown_tool")
+        self.assertEqual(failed.data["details"], {"id": "call-1", "name": "missing_tool"})
+        self.assertTrue(failed.data["recoverable"])
+        tool_message = model.calls[1]["messages"][-1]
+        self.assertEqual(tool_message.role, "tool")
+        self.assertTrue(tool_message.content[0].is_error)
+
+    def test_tool_exception_emits_failed_event_and_continues_loop(self) -> None:
+        model = ScriptedModel(
+            [
+                [ModelStreamDelta(content=[ToolCallBlock("call-1", "explode", {})])],
+                [ModelStreamDelta(content=[TextBlock("done")])],
+            ]
+        )
+        runtime = AgentRuntime(model=model, tools=[ExplodingTool()])
+
+        result = asyncio.run(runtime.run("explode", options=RunOptions(run_id="tool-exception")))
+
+        self.assertEqual(result.text, "done")
+        failed = next(event for event in result.events if event.type == "tool.failed")
+        self.assertEqual(failed.data["code"], "tool_exception")
+        self.assertEqual(failed.data["message"], "boom")
+        self.assertEqual(failed.data["details"]["exception_type"], "ValueError")
+        self.assertTrue(model.calls[1]["messages"][-1].content[0].is_error)
+
+    def test_permission_denied_produces_serializable_failed_event(self) -> None:
+        model = ScriptedModel(
+            [
+                [ModelStreamDelta(content=[ToolCallBlock("call-1", "read_file", {"path": "README.md"})])],
+                [ModelStreamDelta(content=[TextBlock("done")])],
+            ]
+        )
+        runtime = AgentRuntime(
+            model=model,
+            tools=builtin_tools(["read_file"]),
+            permissions=WorkspacePolicy(root=Path.cwd(), read=False, write=False),
+        )
+
+        result = asyncio.run(runtime.run("read", options=RunOptions(run_id="permission-denied")))
+
+        failed = next(event for event in result.events if event.type == "tool.failed")
+        self.assertEqual(failed.data["code"], "permission_denied")
+        self.assertEqual(failed.data["details"]["exception_type"], "PermissionDeniedError")
+        json.dumps(failed.to_dict())
+
+    def test_max_iterations_emits_run_failed(self) -> None:
+        model = ScriptedModel([[ModelStreamDelta(content=[ToolCallBlock("call-1", "missing_tool", {})])]])
+        runtime = AgentRuntime(model=model)
+
+        result = asyncio.run(runtime.run("loop", options=RunOptions(run_id="max", max_iterations=1)))
+
+        failed = result.events[-1]
+        self.assertEqual(failed.type, "run.failed")
+        self.assertEqual(failed.data["code"], "max_iterations")
+        self.assertFalse(failed.data["recoverable"])
+        json.dumps(failed.to_dict())
+
+    def test_provider_failure_emits_run_failed(self) -> None:
+        runtime = AgentRuntime(model=FailingModel())
+
+        result = asyncio.run(runtime.run("fail", options=RunOptions(run_id="provider-failure")))
+
+        self.assertEqual([event.type for event in result.events], ["run.started", "run.failed"])
+        failed = result.events[-1]
+        self.assertEqual(failed.data["code"], "provider_error")
+        self.assertEqual(failed.data["details"]["exception_type"], "RuntimeError")
+        self.assertFalse(failed.data["recoverable"])
+
+    def test_stream_tokens_false_suppresses_deltas_but_completes_message(self) -> None:
+        model = ScriptedModel([[ModelStreamDelta(content=[TextBlock("hel")]), ModelStreamDelta(content=[TextBlock("lo")])]])
+        runtime = AgentRuntime(model=model)
+
+        result = asyncio.run(runtime.run("hi", options=RunOptions(run_id="quiet", stream_tokens=False)))
+
+        self.assertEqual(result.text, "hello")
+        self.assertEqual([event.type for event in result.events], ["run.started", "message.completed", "run.completed"])
 
 
 if __name__ == "__main__":

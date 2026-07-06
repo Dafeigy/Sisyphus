@@ -7,6 +7,7 @@ import json
 import os
 import threading
 from collections.abc import AsyncIterator, Iterable
+from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -75,11 +76,17 @@ class OpenAIProvider:
         stop_event = threading.Event()
 
         def worker() -> None:
+            tool_calls = _StreamingToolCallAccumulator()
             try:
                 for event in self._post_sse(payload):
                     if stop_event.is_set():
                         break
-                    loop.call_soon_threadsafe(queue.put_nowait, self._parse_stream_event(event))
+                    parsed = self._parse_stream_event(event, tool_calls=tool_calls)
+                    if parsed.content or parsed.finish_reason or parsed.usage:
+                        loop.call_soon_threadsafe(queue.put_nowait, parsed)
+                final_tool_calls = tool_calls.flush()
+                if final_tool_calls and not stop_event.is_set():
+                    loop.call_soon_threadsafe(queue.put_nowait, ModelStreamDelta(content=final_tool_calls))
             except BaseException as exc:
                 loop.call_soon_threadsafe(queue.put_nowait, exc)
             finally:
@@ -247,7 +254,12 @@ class OpenAIProvider:
             )
         return blocks
 
-    def _parse_stream_event(self, data: dict[str, Any]) -> ModelStreamDelta:
+    def _parse_stream_event(
+        self,
+        data: dict[str, Any],
+        *,
+        tool_calls: "_StreamingToolCallAccumulator | None" = None,
+    ) -> ModelStreamDelta:
         choices = data.get("choices") or []
         if not choices:
             return ModelStreamDelta(raw=data, model=data.get("model"), usage=data.get("usage"))
@@ -256,15 +268,23 @@ class OpenAIProvider:
         blocks: list[ContentBlock] = []
         if delta.get("content"):
             blocks.append(TextBlock(text=delta["content"]))
-        for call in delta.get("tool_calls") or []:
-            function = call.get("function") or {}
-            blocks.append(
-                ToolCallBlock(
-                    id=call.get("id", ""),
-                    name=function.get("name", ""),
-                    arguments=self._loads_arguments(function.get("arguments")),
-                )
-            )
+        raw_tool_calls = delta.get("tool_calls") or []
+        if raw_tool_calls:
+            if tool_calls is None:
+                for call in raw_tool_calls:
+                    function = call.get("function") or {}
+                    blocks.append(
+                        ToolCallBlock(
+                            id=call.get("id", ""),
+                            name=function.get("name", ""),
+                            arguments=self._loads_arguments(function.get("arguments")),
+                        )
+                    )
+            else:
+                for call in raw_tool_calls:
+                    tool_calls.add(call)
+        if tool_calls is not None and choice.get("finish_reason"):
+            blocks.extend(tool_calls.flush())
         return ModelStreamDelta(
             content=blocks,
             raw=data,
@@ -273,7 +293,8 @@ class OpenAIProvider:
             usage=data.get("usage"),
         )
 
-    def _loads_arguments(self, value: Any) -> dict[str, Any]:
+    @staticmethod
+    def _loads_arguments(value: Any) -> dict[str, Any]:
         if isinstance(value, dict):
             return value
         if not value:
@@ -283,3 +304,42 @@ class OpenAIProvider:
         except json.JSONDecodeError:
             return {"_raw": value}
         return parsed if isinstance(parsed, dict) else {"value": parsed}
+
+
+@dataclass
+class _StreamingToolCallPart:
+    id: str = ""
+    name: str = ""
+    arguments: str = ""
+
+
+class _StreamingToolCallAccumulator:
+    def __init__(self) -> None:
+        self._parts: dict[int, _StreamingToolCallPart] = {}
+
+    def add(self, call: dict[str, Any]) -> None:
+        index = call.get("index")
+        if not isinstance(index, int):
+            index = len(self._parts)
+        part = self._parts.setdefault(index, _StreamingToolCallPart())
+        if call.get("id"):
+            part.id += str(call["id"])
+        function = call.get("function") or {}
+        if function.get("name"):
+            part.name += str(function["name"])
+        if function.get("arguments"):
+            part.arguments += str(function["arguments"])
+
+    def flush(self) -> list[ToolCallBlock]:
+        blocks: list[ToolCallBlock] = []
+        for index in sorted(self._parts):
+            part = self._parts[index]
+            blocks.append(
+                ToolCallBlock(
+                    id=part.id,
+                    name=part.name,
+                    arguments=OpenAIProvider._loads_arguments(part.arguments),
+                )
+            )
+        self._parts.clear()
+        return blocks

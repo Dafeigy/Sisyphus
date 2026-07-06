@@ -180,6 +180,92 @@ class OpenAIProviderTests(unittest.TestCase):
         self.assertEqual([delta.content for delta in deltas], [[TextBlock(text="hel")], [TextBlock(text="lo")]])
         self.assertEqual(deltas[-1].finish_reason, "stop")
 
+    def test_stream_assembles_tool_call_arguments_across_sse_events(self) -> None:
+        lines = [
+            b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"pa\"}}]}}]}\n\n",
+            b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"th\\\":\\\"README\"}}]}}]}\n\n",
+            b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\".md\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            b"data: [DONE]\n\n",
+        ]
+
+        def fake_urlopen(request, timeout):
+            return FakeResponse(lines)
+
+        async def collect():
+            provider = OpenAIProvider(model="mock-model", api_key="anything")
+            with patch("sisyphus.models.openai.urlopen", fake_urlopen):
+                return [delta async for delta in provider.stream([Message.text("user", "read")], [])]
+
+        deltas = asyncio.run(collect())
+
+        self.assertEqual(
+            deltas[-1].content,
+            [ToolCallBlock(id="call_1", name="read_file", arguments={"path": "README.md"})],
+        )
+
+    def test_stream_assembles_multiple_tool_calls_by_index(self) -> None:
+        lines = [
+            b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"call_b\",\"function\":{\"name\":\"echo\",\"arguments\":\"{\\\"text\\\":\\\"b\"}},{\"index\":0,\"id\":\"call_a\",\"function\":{\"name\":\"mock_lookup\",\"arguments\":\"{\\\"query\\\":\\\"a\\\"}\"}}]}}]}\n\n",
+            b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"function\":{\"arguments\":\"\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            b"data: [DONE]\n\n",
+        ]
+
+        def fake_urlopen(request, timeout):
+            return FakeResponse(lines)
+
+        async def collect():
+            provider = OpenAIProvider(model="mock-model", api_key="anything")
+            with patch("sisyphus.models.openai.urlopen", fake_urlopen):
+                return [delta async for delta in provider.stream([Message.text("user", "tools")], [])]
+
+        deltas = asyncio.run(collect())
+
+        self.assertEqual(
+            deltas[-1].content,
+            [
+                ToolCallBlock(id="call_a", name="mock_lookup", arguments={"query": "a"}),
+                ToolCallBlock(id="call_b", name="echo", arguments={"text": "b"}),
+            ],
+        )
+
+    def test_stream_supports_mixed_text_and_tool_call_deltas(self) -> None:
+        lines = [
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"Checking \",\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"echo\",\"arguments\":\"{}\"}}]}}]}\n\n",
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"now\"},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            b"data: [DONE]\n\n",
+        ]
+
+        def fake_urlopen(request, timeout):
+            return FakeResponse(lines)
+
+        async def collect():
+            provider = OpenAIProvider(model="mock-model", api_key="anything")
+            with patch("sisyphus.models.openai.urlopen", fake_urlopen):
+                return [delta async for delta in provider.stream([Message.text("user", "tools")], [])]
+
+        deltas = asyncio.run(collect())
+
+        self.assertEqual(deltas[0].content, [TextBlock(text="Checking ")])
+        self.assertEqual(deltas[1].content, [TextBlock(text="now"), ToolCallBlock(id="call_1", name="echo", arguments={})])
+
+    def test_stream_invalid_tool_arguments_fall_back_to_raw(self) -> None:
+        lines = [
+            b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"echo\",\"arguments\":\"{bad\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            b"data: [DONE]\n\n",
+        ]
+
+        def fake_urlopen(request, timeout):
+            return FakeResponse(lines)
+
+        async def collect():
+            provider = OpenAIProvider(model="mock-model", api_key="anything")
+            with patch("sisyphus.models.openai.urlopen", fake_urlopen):
+                return [delta async for delta in provider.stream([Message.text("user", "tools")], [])]
+
+        deltas = asyncio.run(collect())
+
+        self.assertEqual(deltas[-1].content, [ToolCallBlock(id="call_1", name="echo", arguments={"_raw": "{bad"})])
+
 
 if __name__ == "__main__":
     unittest.main()
